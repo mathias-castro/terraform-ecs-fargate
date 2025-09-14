@@ -1,37 +1,78 @@
-provider "aws" { region = var.region }
+provider "aws" {
+  region = var.region
+}
 
-data "aws_vpc" "default" { default = true }
-data "aws_subnets" "vpc" { filter { name = "vpc-id" values = [data.aws_vpc.default.id] } }
+# VPC por defecto
+data "aws_vpc" "default" {
+  default = true
+}
+
+# TODAS las subnets de esa VPC
+data "aws_subnets" "vpc" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
+# Trae atributos de cada subnet para filtrar públicas
 data "aws_subnet" "by_id" {
   for_each = toset(data.aws_subnets.vpc.ids)
   id       = each.value
 }
+
 locals {
-  public_subnet_ids = [for s in data.aws_subnet.by_id : s.id if s.map_public_ip_on_launch]
-  vpc_id            = data.aws_vpc.default.id
+  public_subnet_ids = [
+    for s in data.aws_subnet.by_id : s.id
+    if s.map_public_ip_on_launch
+  ]
+  vpc_id = data.aws_vpc.default.id
 }
 
+# Security Groups
 resource "aws_security_group" "alb" {
   name        = "alb-sg"
   description = "ALB SG"
   vpc_id      = local.vpc_id
-  ingress { from_port=80 to_port=80 protocol="tcp" cidr_blocks=["0.0.0.0/0"] }
-  egress  { from_port=0 to_port=0 protocol="-1" cidr_blocks=["0.0.0.0/0"] }
+
+  ingress {
+    description = "HTTP from internet"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
 resource "aws_security_group" "svc" {
   name        = "svc-sg"
   description = "Service SG"
   vpc_id      = local.vpc_id
+
   ingress {
+    description     = "Traffic from ALB to container"
     from_port       = var.container_port
     to_port         = var.container_port
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }
-  egress { from_port=0 to_port=0 protocol="-1" cidr_blocks=["0.0.0.0/0"] }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
+# ALB + TG + Listener
 resource "aws_lb" "this" {
   name               = "api-students-alb"
   load_balancer_type = "application"
@@ -46,13 +87,14 @@ resource "aws_lb_target_group" "this" {
   target_type = "ip"
   port        = var.container_port
   protocol    = "HTTP"
+
   health_check {
-    path                = var.health_check_path
-    matcher             = "200-399"
     healthy_threshold   = 2
     unhealthy_threshold = 2
     interval            = 30
     timeout             = 5
+    path                = var.health_check_path
+    matcher             = "200-399"
   }
 }
 
@@ -60,14 +102,20 @@ resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.this.arn
   port              = 80
   protocol          = "HTTP"
-  default_action { type = "forward" target_group_arn = aws_lb_target_group.this.arn }
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.this.arn
+  }
 }
 
+# Logs
 resource "aws_cloudwatch_log_group" "this" {
   name              = "/ecs/api-students-tf"
   retention_in_days = 7
 }
 
+# ECS
 resource "aws_ecs_cluster" "this" {
   name = "api-students-tf-cluster"
 }
@@ -81,20 +129,27 @@ resource "aws_ecs_task_definition" "this" {
   execution_role_arn       = var.lab_role_arn
   task_role_arn            = var.lab_role_arn
 
-  container_definitions = jsonencode([{
-    name      = "api-students"
-    image     = var.image_uri
-    essential = true
-    portMappings = [{ containerPort = var.container_port, protocol = "tcp" }]
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        awslogs-group         = aws_cloudwatch_log_group.this.name
-        awslogs-region        = var.region
-        awslogs-stream-prefix = "ecs"
+  container_definitions = jsonencode([
+    {
+      name      = "api-students"
+      image     = var.image_uri
+      essential = true
+      portMappings = [
+        {
+          containerPort = var.container_port
+          protocol      = "tcp"
+        }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.this.name
+          awslogs-region        = var.region
+          awslogs-stream-prefix = "ecs"
+        }
       }
     }
-  }])
+  ])
 }
 
 resource "aws_ecs_service" "this" {
