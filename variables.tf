@@ -31,3 +31,13 @@ variable "health_check_path" {
   type        = string
   default     = "/students"
 }
+
+variable "vpc_id" {
+  description = "VPC ID (por ej. vpc-0abc123def...)"
+  type        = string
+}
+
+variable "subnet_ids" {
+  description = "Subnets PÚBLICAS de esa VPC (2 o más)"
+  type        = list(string)
+}
